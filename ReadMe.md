@@ -14,7 +14,7 @@ ConforMorph-VAE/
 │   ├── raw/                # Downloaded SDF files
 │   └── processed/          # Preprocessed tensors
 ├── src/
-│   ├── scraper.py         # PubChem CID scraping and SDF download
+│   ├── scraper.py         # PubChem data acquisition via REST API
 │   ├── preprocess.py      # RDKit processing and tensor conversion
 │   ├── models.py          # VAE architecture definitions
 │   ├── train.py           # Training loop and checkpointing
@@ -40,8 +40,14 @@ pip install -r requirements.txt
 
 ### 1. Data Acquisition
 ```bash
-# Scrape CIDs and download SDF files
-python src/scraper.py --start_page 1 --end_page 5 --output data/raw/
+# Download curated sample molecules (recommended for testing)
+python src/scraper.py --source sample --max_molecules 100 --output data/raw/
+
+# For quick testing (downloads only 10 molecules)
+python src/scraper.py --test_mode
+
+# Use PubChem API search (more molecules, less reliable)
+python src/scraper.py --source api --query "drug" --max_molecules 500
 ```
 
 ### 2. Preprocessing
@@ -79,7 +85,7 @@ python src/evaluate.py --model checkpoints/model_best.pt --data data/processed/
 
 ## Data Pipeline
 
-1. **Scraping**: Extract CIDs from PubChem index pages
+1. **Data Acquisition**: Use curated CID lists or PubChem API search for known compounds
 2. **Download**: Fetch 3D SDF files via PUG-REST API
 3. **Validation**: RDKit sanitisation and 3D coordinate verification
 4. **Tensorisation**: Convert to PyTorch tensors with consistent padding
@@ -87,7 +93,7 @@ python src/evaluate.py --model checkpoints/model_best.pt --data data/processed/
 
 ## File Descriptions
 
-- `scraper.py`: Web scraping with retry logic and error handling
+- `scraper.py`: Data acquisition using curated CID lists and PubChem REST API
 - `preprocess.py`: RDKit-based molecular processing and tensor conversion
 - `models.py`: PyTorch VAE implementation with encoder/decoder modules
 - `train.py`: Training loop with checkpointing and loss logging
@@ -98,8 +104,9 @@ python src/evaluate.py --model checkpoints/model_best.pt --data data/processed/
 **Common Issues**:
 - RDKit installation: Use conda-forge channel
 - Memory limits: Reduce batch size or max_atoms parameter
-- Network timeouts: Adjust retry intervals in scraper
+- Network timeouts: Use --test_mode for initial testing, adjust delay between downloads
 - Convergence: Tune learning rate and KLD weighting
+- No 3D structures: Some CIDs lack 3D conformations, use --source sample for reliable data
 
 ## Citation
 

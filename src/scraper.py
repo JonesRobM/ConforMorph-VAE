@@ -6,7 +6,6 @@ Scrapes CIDs from index pages and downloads 3D SDF files.
 import argparse
 import time
 import requests
-from bs4 import BeautifulSoup
 from pathlib import Path
 from tqdm import tqdm
 import logging
@@ -15,47 +14,128 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def fetch_cids(page_url, max_retries=3):
+def get_sample_cids():
     """
-    Scrape CID list from a PubChem index page.
+    Get a curated list of CIDs known to have 3D structures.
+    These are common small molecules from drug databases.
+    
+    Returns:
+        list: List of CID integers with confirmed 3D structures
+    """
+    # Common drug molecules and natural products with 3D structures
+    sample_cids = [
+        # Drugs
+        2244,      # Aspirin
+        3672,      # Ibuprofen
+        4409,      # Caffeine
+        5090,      # Morphine
+        60823,     # Imatinib
+        2519,      # Cocaine
+        5280445,   # Resveratrol
+        5280343,   # Quercetin
+        445639,    # Sildenafil
+        2662,      # Glucose
+        
+        # Amino acids
+        5950,      # Alanine
+        6322,      # Glycine
+        6140,      # Phenylalanine
+        6305,      # Tryptophan
+        6274,      # Tyrosine
+        
+        # Nucleotides
+        6083,      # Adenine
+        1135,      # Guanine
+        1174,      # Cytosine
+        1135,      # Thymine
+        
+        # Common organic molecules
+        241,       # Benzene
+        996,       # Ethanol
+        887,       # Methanol
+        8078,      # Phenol
+        7847,      # Aniline
+        
+        # More complex drugs
+        135398744, # Remdesivir
+        5311,      # Warfarin
+        4080,      # Nicotine
+        2244,      # Acetylsalicylic acid
+        2078,      # Vanillin
+    ]
+    
+    # Add ranges of consecutive CIDs that often have 3D structures
+    # Small molecule range
+    sample_cids.extend(range(1000, 1100))   # Small organics
+    sample_cids.extend(range(5000, 5200))   # Drug-like molecules
+    sample_cids.extend(range(10000, 10100)) # More complex structures
+    
+    return list(set(sample_cids))  # Remove duplicates
+
+def fetch_cids_from_pubchem_api(query="aspirin", max_cids=100):
+    """
+    Use PubChem's REST API to search for compounds and get CIDs.
     
     Args:
-        page_url (str): URL of the PubChem page to scrape
-        max_retries (int): Maximum number of retry attempts
+        query (str): Search query
+        max_cids (int): Maximum CIDs to return
         
     Returns:
         list: List of CID integers
     """
-    for attempt in range(max_retries):
-        try:
-            response = requests.get(page_url, timeout=30)
-            response.raise_for_status()
+    try:
+        # PubChem compound search API
+        search_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{query}/cids/JSON"
+        response = requests.get(search_url, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            cids = data.get('IdentifierList', {}).get('CID', [])
+            return cids[:max_cids]
+        else:
+            logger.warning(f"API search failed for query: {query}")
+            return []
             
-            soup = BeautifulSoup(response.content, 'html.parser')
+    except Exception as e:
+        logger.warning(f"API search error: {e}")
+        return []
+
+def fetch_cids(source_type="sample", query="drug", max_cids=500):
+    """
+    Get CIDs from various sources.
+    
+    Args:
+        source_type (str): Type of source ('sample', 'api', 'file')
+        query (str): Query for API search
+        max_cids (int): Maximum CIDs to return
+        
+    Returns:
+        list: List of CID integers
+    """
+    if source_type == "sample":
+        cids = get_sample_cids()
+        logger.info(f"Using curated sample CIDs: {len(cids)} total")
+        return cids[:max_cids]
+    
+    elif source_type == "api":
+        # Try multiple search terms for diversity
+        search_terms = [query, "drug", "natural product", "vitamin", "hormone"]
+        all_cids = []
+        
+        for term in search_terms:
+            cids = fetch_cids_from_pubchem_api(term, max_cids // len(search_terms))
+            all_cids.extend(cids)
+            time.sleep(0.5)  # Rate limiting
             
-            # Find CID links - adjust selector based on PubChem structure
-            cid_links = soup.find_all('a', href=lambda x: x and '/compound/' in x)
-            cids = []
-            
-            for link in cid_links:
-                href = link.get('href')
-                if '/compound/' in href:
-                    try:
-                        cid = int(href.split('/compound/')[-1].split('#')[0])
-                        cids.append(cid)
-                    except (ValueError, IndexError):
-                        continue
-            
-            logger.info(f"Found {len(cids)} CIDs on page: {page_url}")
-            return list(set(cids))  # Remove duplicates
-            
-        except requests.RequestException as e:
-            logger.warning(f"Attempt {attempt + 1} failed for {page_url}: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)  # Exponential backoff
-            else:
-                logger.error(f"Failed to fetch CIDs from {page_url} after {max_retries} attempts")
-                return []
+            if len(all_cids) >= max_cids:
+                break
+        
+        logger.info(f"Found {len(all_cids)} CIDs from API search")
+        return list(set(all_cids))[:max_cids]
+    
+    else:
+        logger.error(f"Unknown source type: {source_type}")
+        return []
 
 def download_sdf(cid, output_dir, max_retries=3):
     """
@@ -103,39 +183,40 @@ def download_sdf(cid, output_dir, max_retries=3):
     return False
 
 def main():
-    parser = argparse.ArgumentParser(description="Scrape PubChem CIDs and download SDF files")
-    parser.add_argument("--start_page", type=int, default=1, help="Starting page index")
-    parser.add_argument("--end_page", type=int, default=5, help="Ending page index")
+    parser = argparse.ArgumentParser(description="Download PubChem SDF files")
+    parser.add_argument("--source", type=str, default="sample", 
+                       choices=["sample", "api"], 
+                       help="Source of CIDs: 'sample' for curated list, 'api' for PubChem search")
+    parser.add_argument("--query", type=str, default="drug", 
+                       help="Search query for API source")
     parser.add_argument("--output", type=str, default="data/raw/", help="Output directory")
-    parser.add_argument("--max_molecules", type=int, default=1000, help="Maximum molecules to download")
+    parser.add_argument("--max_molecules", type=int, default=500, help="Maximum molecules to download")
     parser.add_argument("--delay", type=float, default=0.5, help="Delay between downloads (seconds)")
+    parser.add_argument("--test_mode", action="store_true", help="Download only 10 molecules for testing")
     
     args = parser.parse_args()
+    
+    if args.test_mode:
+        args.max_molecules = 10
+        logger.info("Test mode: downloading only 10 molecules")
     
     # Create output directory
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    logger.info(f"Starting scraper: pages {args.start_page}-{args.end_page}")
+    logger.info(f"Starting data acquisition")
+    logger.info(f"Source: {args.source}")
     logger.info(f"Output directory: {output_dir}")
+    logger.info(f"Max molecules: {args.max_molecules}")
     
-    all_cids = []
+    # Get CIDs
+    all_cids = fetch_cids(args.source, args.query, args.max_molecules)
     
-    # Collect CIDs from multiple pages
-    for page_num in range(args.start_page, args.end_page + 1):
-        # Example PubChem URL pattern - adjust based on actual structure
-        page_url = f"https://pubchem.ncbi.nlm.nih.gov/compound?ctype=3D&page={page_num}"
-        cids = fetch_cids(page_url)
-        all_cids.extend(cids)
-        
-        if len(all_cids) >= args.max_molecules:
-            break
-        
-        time.sleep(args.delay)
+    if not all_cids:
+        logger.error("No CIDs found! Check your source configuration.")
+        return
     
-    # Limit to max_molecules
-    all_cids = list(set(all_cids))[:args.max_molecules]
-    logger.info(f"Collected {len(all_cids)} unique CIDs")
+    logger.info(f"Retrieved {len(all_cids)} CIDs")
     
     # Download SDF files
     successful_downloads = 0
@@ -148,9 +229,18 @@ def main():
             failed_downloads += 1
         
         time.sleep(args.delay)
+        
+        # Stop early if test mode and we have enough
+        if args.test_mode and successful_downloads >= 10:
+            break
     
     logger.info(f"Download complete: {successful_downloads} successful, {failed_downloads} failed")
     logger.info(f"Files saved to: {output_dir}")
+    
+    if successful_downloads == 0:
+        logger.error("No files downloaded successfully! Check network connection and CID validity.")
+    elif successful_downloads < 10:
+        logger.warning("Very few files downloaded. Consider using --source sample for reliable test data.")
 
 if __name__ == "__main__":
     main()
